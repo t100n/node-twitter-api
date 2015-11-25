@@ -255,35 +255,177 @@ Twitter.prototype.statuses = function(type, params, accessToken, accessTokenSecr
 };
 
 Twitter.prototype.uploadMedia = function(params, accessToken, accessTokenSecret, callback) {
-	var r = request.post({
-		url: uploadBaseUrl + "media/upload.json",
-		oauth: {
-			consumer_key: this.consumerKey,
-			consumer_secret: this.consumerSecret,
-			token: accessToken,
-			token_secret: accessTokenSecret
-		}
-	}, function(error, response, body) {
-		if (error) {
-			callback(error, body, response, uploadBaseUrl + "media/upload.json?" + querystring.stringify(params));
-		} else {
-			try {
-				callback(null, JSON.parse(body), response);
-			} catch (e) {
-				callback(e, body, response);
+	
+	if(params.mediaType && params.mediaType.match('image/')) {
+
+		var r = request.post({
+			url: uploadBaseUrl + "media/upload.json",
+			oauth: {
+				consumer_key: this.consumerKey,
+				consumer_secret: this.consumerSecret,
+				token: accessToken,
+				token_secret: accessTokenSecret
 			}
+		}, function(error, response, body) {
+			if (error) {
+				callback(error, body, response, uploadBaseUrl + "media/upload.json?" + querystring.stringify(params));
+			} else {
+				try {
+					callback(null, JSON.parse(body), response);
+				} catch (e) {
+					callback(e, body, response);
+				}
+			}
+		});
+
+		var parameter = (params.isBase64) ? "media_data" : "media";
+
+		// multipart/form-data
+		var form = r.form();
+		if (fs.existsSync(params.media)) {
+			form.append(parameter, fs.createReadStream(params.media));
+		} else {
+			form.append(parameter, params.media);
 		}
-	});
 
-	var parameter = (params.isBase64) ? "media_data" : "media";
+	}//if
+	// Load our video
+    else if(params.mediaType && params.mediaType.match('video/')) {
+    	var options = {
+			url: uploadBaseUrl + "media/upload.json",
+			oauth: {
+				consumer_key: this.consumerKey,
+				consumer_secret: this.consumerSecret,
+				token: accessToken,
+				token_secret: accessTokenSecret
+			}
+		};
+    	var that = this;
+    	var bufferLength = 1024*1024;
+    	var theBuffer = new Buffer(bufferLength);
+    	var offset = 0;
+    	var segment_index = 0;
+    	var finished = 0;
 
-	// multipart/form-data
-	var form = r.form();
-	if (fs.existsSync(params.media)) {
-		form.append(parameter, fs.createReadStream(params.media));
-	} else {
-		form.append(parameter, params.media);
-	}
+    	var filePath = params.media;
+    	var formData = {
+    		command: "INIT",
+    		media_type: params.mediaType,
+    		total_bytes: params.totalBytes
+    	};
+
+    	options['formData'] = formData;
+
+    	console.log("uploadMedia", options);
+
+    	var normalAppendCallback = function(media_id) {
+    		return function(err, response, body) {
+    			finished++;
+
+    			if (finished === segment_index) {
+    				options.formData = {
+    					command: 'FINALIZE',
+    					media_id: media_id
+    				};
+
+    				request.post(options, function(err, response, body) {
+    					console.log('FINALIZED',response.statusCode,body);
+
+    					delete options.formData;
+
+    					//Note: This is not working as expected yet.
+    					options.formData = {
+    						command: 'STATUS',
+    						media_id: media_id
+    					};
+    					request.get(options, function(err, response, body) {
+    						console.log('STATUS: ', response.statusCode, body);
+    					});
+
+    					try {
+    						body = JSON.parse(body);
+    					}
+    					catch(parseError) {
+    						
+    						console.log(parseError);
+
+    						return callback(
+    							new Error('Status Code: ' + response.statusCode),
+    							body,
+    							response
+    						);
+    					}
+
+    					callback(null, body, response);
+    				});
+    			}
+    		};
+    	};
+
+    	request.post(options, function(err, response, body) {
+
+    		if (err) {
+    			callback(err, body, response);
+    		}
+    		else {
+    			try {
+    				body = JSON.parse(body);
+    			}
+    			catch(parseError) {
+    				
+    				console.log(parseError);
+
+    				callback(
+    					new Error('Status Code: ' + response.statusCode),
+    					body,
+    					response
+    				);
+    			}
+    			if (typeof body.errors !== 'undefined') {
+    				callback(body.errors, body, response);
+    			}
+    			else if(response.statusCode > 399) {
+    				callback(
+    					new Error('Status Code: ' + response.statusCode),
+    					body,
+    					response
+    				);
+    			}
+    			else {
+    				var media_id;
+    				media_id = body.media_id_string;
+
+    				fs.open(filePath, 'r', function(err, fd) {
+    					var bytesRead, body;
+
+    					while (offset < params.totalBytes) {
+    						bytesRead = fs.readSync(fd, theBuffer, 0, bufferLength, null);
+    						body = bytesRead < bufferLength ? theBuffer.slice(0, bytesRead) : theBuffer;
+    						options.formData = {
+    							command: "APPEND",
+    							media_id: media_id,
+    							segment_index: segment_index,
+    							media_data: body.toString('base64')
+    						};
+    						request.post(options, normalAppendCallback(media_id));
+    						offset += bufferLength;
+    						segment_index++
+    					}
+    				});
+    			}
+    		}
+    	});
+
+    }//else if
+    else {
+
+    	return callback(
+            new Error('Status Code: 404'),
+            null,
+            null
+          );
+
+    }//else
 };
 
 // Search
