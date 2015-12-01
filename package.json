@@ -15,7 +15,8 @@
 	},
 	"dependencies": {
 		"oauth": ">=0.8.4",
-		"request": "*"
+		"request": "*",
+		"ffmpeg": "latest"
 	},
 	"engines": {
 		"node": ">=0.4.0"

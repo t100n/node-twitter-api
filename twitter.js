@@ -3,7 +3,9 @@ var VERSION = "1.6.2",
 	querystring = require("querystring"),
 	oauth = require("oauth"),
 	request = require("request"),
-	fs = require("fs");
+	fs = require("fs"),
+	ffmpeg = require('ffmpeg')
+	;
 
 var baseUrl = "https://api.twitter.com/1.1/";
 var uploadBaseUrl = "https://upload.twitter.com/1.1/";
@@ -16,6 +18,7 @@ var Twitter = function(options) {
 	this.consumerKey = options.consumerKey;
 	this.consumerSecret = options.consumerSecret;
 	this.callback = options.callback;
+	this.videoMaxSize = 1280;
 
 	this.oa = new oauth.OAuth("https://twitter.com/oauth/request_token", "https://twitter.com/oauth/access_token",
 		this.consumerKey, this.consumerSecret, "1.0A", this.callback, "HMAC-SHA1");
@@ -23,6 +26,64 @@ var Twitter = function(options) {
 	return this;
 };
 Twitter.VERSION = VERSION;
+
+Twitter.prototype.resizeVideo = function(videoUrl, cb) {
+	var that = this;
+
+	try {
+		var processVideo = new ffmpeg(videoUrl);
+		processVideo.then(function (video) {
+			var callback = function (error, files) {
+				if(error || !files){
+					return cb(error);
+				}
+				
+				if(files) {
+					fs.rename(files, videoUrl, function(err) {
+
+						cb(error, true);
+
+					});
+				}//if
+				else {
+
+					cb(error, false);
+
+				}//else
+			}
+
+			var resolution = video.metadata.video.resolution;
+			var resize = false;
+			var width = resolution.w;
+			var height = resolution.h;
+			if(resolution.w > that.videoMaxSize) {
+				var ratio = resolution.w / that.videoMaxSize;
+				width = that.videoMaxSize;
+				height = height / ratio;
+				resize = true;
+			}//if
+			else if(resolution.h > that.videoMaxSize) {
+				var ratio = resolution.h / that.videoMaxSize;
+				height = that.videoMaxSize;
+				width = width / ratio;
+				resize = true;
+			}//else if
+
+			if(!resize) {
+				return cb(null, false);
+			}//if
+
+			video.addCommand('-vf', '\"scale='+width+':'+height+'\"');
+			video.save(videoUrl.replace(/\.([a-zA-Z0-9]+)$/, '_scaled.$1'), callback);
+
+		}, function (err) {
+			console.log('Error: ' + err);
+			cb(err, false);
+		});
+	} catch (e) {
+		cb(e, false);
+	}
+};
 
 Twitter.prototype.getRequestToken = function(callback) {
 	this.oa.getOAuthRequestToken(function(error, oauthToken, oauthTokenSecret, results) {
@@ -308,113 +369,113 @@ Twitter.prototype.uploadMedia = function(params, accessToken, accessTokenSecret,
     	var finished = 0;
 
     	var filePath = params.media;
-    	var formData = {
-    		command: "INIT",
-    		media_type: params.mediaType,
-    		total_bytes: params.totalBytes
-    	};
 
-    	options['formData'] = formData;
+    	this.resizeVideo(filePath, function(err, resized) {
 
-    	console.log("uploadMedia", options);
+    		fs.stat(filePath, function(err, stats) {
 
-    	var normalAppendCallback = function(media_id) {
-    		return function(err, response, body) {
-    			finished++;
+		    	var formData = {
+		    		command: "INIT",
+		    		media_type: params.mediaType,
+		    		total_bytes: stats.size
+		    	};
 
-    			if (finished === segment_index) {
-    				options.formData = {
-    					command: 'FINALIZE',
-    					media_id: media_id
-    				};
+		    	options['formData'] = formData;
 
-    				request.post(options, function(err, response, body) {
-    					console.log('FINALIZED',response.statusCode,body);
+		    	//console.log("uploadMedia", options);
 
-    					delete options.formData;
+		    	var normalAppendCallback = function(media_id) {
+		    		return function(err, response, body) {
+		    			finished++;
 
-    					//Note: This is not working as expected yet.
-    					options.formData = {
-    						command: 'STATUS',
-    						media_id: media_id
-    					};
-    					request.get(options, function(err, response, body) {
-    						console.log('STATUS: ', response.statusCode, body);
-    					});
+		    			if (finished === segment_index) {
+		    				options.formData = {
+		    					command: 'FINALIZE',
+		    					media_id: media_id
+		    				};
 
-    					try {
-    						body = JSON.parse(body);
-    					}
-    					catch(parseError) {
-    						
-    						console.log(parseError);
+		    				request.post(options, function(err, response, body) {
+		    					//console.log('FINALIZED',response.statusCode,body);
 
-    						return callback(
-    							new Error('Status Code: ' + response.statusCode),
-    							body,
-    							response
-    						);
-    					}
+		    					delete options.formData;
 
-    					callback(null, body, response);
-    				});
-    			}
-    		};
-    	};
+		    					try {
+		    						body = JSON.parse(body);
+		    					}
+		    					catch(parseError) {
+		    						
+		    						console.log(parseError);
 
-    	request.post(options, function(err, response, body) {
+		    						return callback(
+		    							new Error('Status Code: ' + response.statusCode),
+		    							body,
+		    							response
+		    						);
+		    					}
 
-    		if (err) {
-    			callback(err, body, response);
-    		}
-    		else {
-    			try {
-    				body = JSON.parse(body);
-    			}
-    			catch(parseError) {
-    				
-    				console.log(parseError);
+		    					callback(null, body, response);
+		    				});
+		    			}
+		    		};
+		    	};
 
-    				callback(
-    					new Error('Status Code: ' + response.statusCode),
-    					body,
-    					response
-    				);
-    			}
-    			if (typeof body.errors !== 'undefined') {
-    				callback(body.errors, body, response);
-    			}
-    			else if(response.statusCode > 399) {
-    				callback(
-    					new Error('Status Code: ' + response.statusCode),
-    					body,
-    					response
-    				);
-    			}
-    			else {
-    				var media_id;
-    				media_id = body.media_id_string;
+		    	request.post(options, function(err, response, body) {
 
-    				fs.open(filePath, 'r', function(err, fd) {
-    					var bytesRead, body;
+		    		if (err) {
+		    			callback(err, body, response);
+		    		}
+		    		else {
+		    			try {
+		    				body = JSON.parse(body);
+		    			}
+		    			catch(parseError) {
+		    				
+		    				console.log(parseError);
 
-    					while (offset < params.totalBytes) {
-    						bytesRead = fs.readSync(fd, theBuffer, 0, bufferLength, null);
-    						body = bytesRead < bufferLength ? theBuffer.slice(0, bytesRead) : theBuffer;
-    						options.formData = {
-    							command: "APPEND",
-    							media_id: media_id,
-    							segment_index: segment_index,
-    							media_data: body.toString('base64')
-    						};
-    						request.post(options, normalAppendCallback(media_id));
-    						offset += bufferLength;
-    						segment_index++
-    					}
-    				});
-    			}
-    		}
-    	});
+		    				callback(
+		    					new Error('Status Code: ' + response.statusCode),
+		    					body,
+		    					response
+		    				);
+		    			}
+		    			if (typeof body.errors !== 'undefined') {
+		    				callback(body.errors, body, response);
+		    			}
+		    			else if(response.statusCode > 399) {
+		    				callback(
+		    					new Error('Status Code: ' + response.statusCode),
+		    					body,
+		    					response
+		    				);
+		    			}
+		    			else {
+		    				var media_id;
+		    				media_id = body.media_id_string;
+
+		    				fs.open(filePath, 'r', function(err, fd) {
+		    					var bytesRead, body;
+
+		    					while (offset < params.totalBytes) {
+		    						bytesRead = fs.readSync(fd, theBuffer, 0, bufferLength, null);
+		    						body = bytesRead < bufferLength ? theBuffer.slice(0, bytesRead) : theBuffer;
+		    						options.formData = {
+		    							command: "APPEND",
+		    							media_id: media_id,
+		    							segment_index: segment_index,
+		    							media_data: body.toString('base64')
+		    						};
+		    						request.post(options, normalAppendCallback(media_id));
+		    						offset += bufferLength;
+		    						segment_index++
+		    					}
+		    				});
+		    			}
+		    		}
+		    	});
+				
+			});
+
+		});
 
     }//else if
     else {
